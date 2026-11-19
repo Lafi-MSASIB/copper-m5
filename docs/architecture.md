@@ -171,3 +171,52 @@ the tests and a golden-set evaluation with an AI judge run in GitHub Actions
 on every pull request, with `main` protected; every AI call is traced in
 Langfuse; and one support agent that does everything is compared with the two
 agents on the same golden set. Langfuse is the only eval and monitoring tool.
+
+## Module 5: Quality gate and Langfuse tracing
+
+**Summary:** Every AI call is traced in Langfuse, so one question shows up as
+one trace with the agents that handled it, their tool calls, tokens, cost and
+time. A GitHub Actions workflow runs the tests and the golden-set evaluation on
+every pull request. (The golden set and the AI judge come next; this section
+covers the workflow and the tracing.)
+
+| Piece | Where | What it does |
+|---|---|---|
+| Startup | `instrumentation.ts` | Runs once when the server starts and calls `startTracing()` (Node.js runtime only) |
+| Tracing helper | `lib/ai/langfuse.ts` | `startTracing()` starts the Langfuse exporter once and registers the AI SDK integration. `traceTurn()` makes one trace per question; `traceAgent()` shows each agent inside it; `flushTraces()` sends what is waiting before a serverless function can freeze. Without the Langfuse keys, none of it does anything |
+| Call labels | `lib/ai/call.ts` | Every `callText`, `callObject`, `callStream` and `callEmbedMany` is named by its `feature` (for example `refund-agent`) and carries its `module` as metadata |
+| Chat | `lib/copper/assistant/ask.ts` | Wraps each question in `traceTurn` (name `ask-copper`, tag `tools` or `no-tools`) and each agent's turn in `traceAgent` (`copper`, `refund-agent`, `copper-no-tools`) |
+| Workflow | `.github/workflows/quality-gate.yml` | Two checks on every pull request: `tests` (lint, typecheck, `npm test`) and `golden-set` (`npm run eval`, using the repo's Actions secrets). Branch protection will require both |
+| Secrets | `.env.local` and the repo's Actions secrets | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`, `GOOGLE_GENERATIVE_AI_API_KEY`; `AI_MODEL` is an Actions variable |
+
+**What one trace looks like:** `ask-copper` (the turn, with the customer's
+message as input and the reply as output) → `copper` (agent) → the model calls
+(each with its tokens and cost, which Langfuse works out from the model name)
+and the tool calls (`get_products`, `search_docs`, ...). When Copper hands a
+refund over, `refund-agent` appears as a second agent inside the same trace.
+
+**Data flow:** question → `askCopper` → `traceTurn` → `traceAgent` → model and
+tool calls (traced automatically through the AI SDK integration) → reply →
+`flushTraces()` → Langfuse.
+
+**Decisions and trade-offs:**
+- **One tool, Langfuse.** Tracing, scores and the comparison all live in
+  Langfuse; no other monitoring tool is added.
+- **Tracing is optional and can't break a chat.** Without the keys nothing is
+  sent. If tracing itself fails before the work starts, the chat runs untraced,
+  and a failure to send is logged, not thrown.
+- **Spans are sent as they end** (`exportMode: "immediate"`) and flushed at the
+  end of each turn, because a serverless function can be frozen after the
+  answer, and a span still waiting would be lost.
+- **The region matters.** A project's keys only work on its own Langfuse server:
+  `copper-m5` is on the US server, `https://us.cloud.langfuse.com`.
+
+**Risks and open questions:**
+- **Customer text is recorded.** The question and the reply are stored in
+  Langfuse. That's fine for the fictional demo; a real deployment would mask
+  personal details first.
+- **Google's free limit.** The golden-set evaluation makes many model requests,
+  and a free key allows about 20 a day for `gemini-3-flash`. The key and the
+  size of the golden set are still to be decided.
+- **The `golden-set` check fails until the evaluation exists.** That is
+  deliberate, so a missing evaluation can't pass silently.

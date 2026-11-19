@@ -11,6 +11,7 @@
 // back. The agent that ends the turn answers the next message too.
 import { hasToolCall, stepCountIs } from "ai";
 import { callStream, THOUGHT_SUMMARIES } from "@/lib/ai/call";
+import { flushTraces, traceAgent, traceTurn } from "@/lib/ai/langfuse";
 import { createLive, type Live } from "@/lib/ai/live";
 import {
   COPPER_HANDOFF,
@@ -192,38 +193,64 @@ export async function askCopper({
 
   // Read the stream in the background, so the panel gets the first update now.
   void (async () => {
-    try {
-      if (!useTools) {
-        // Without tools, send no instructions either: "always use your
-        // tools" with no tools makes the model answer with nothing.
-        await follow(
-          "copper",
-          callStream(
-            { module: 2, feature: "ask-copper" },
-            { messages, providerOptions: THOUGHT_SUMMARIES },
-          ),
-        );
-      } else {
-        let current = first;
-        for (let handoffs = 0; ; handoffs++) {
-          const next = await follow(
-            current,
-            agentCall(current, messages, desk),
-          );
-          if (!next || next === current || handoffs >= MAX_HANDOFFS) break;
-          progress.steps.push({ type: "handoff", from: current, to: next });
-          progress.agent = current = next;
-          progress.reply = "";
-          call++;
-          update(snapshot());
+    // One Langfuse trace per question: each agent, its model calls and its
+    // tools hang under it. (Nothing is sent unless the Langfuse keys are set.)
+    await traceTurn(
+      {
+        name: "ask-copper",
+        input: messages.at(-1)?.content ?? "",
+        tags: [useTools ? "tools" : "no-tools"],
+        metadata: {
+          useTools,
+          startedWith: first,
+          onSupportPage: Boolean(desk),
+        },
+      },
+      async (finish) => {
+        try {
+          if (!useTools) {
+            // Without tools, send no instructions either: "always use your
+            // tools" with no tools makes the model answer with nothing.
+            await traceAgent("copper-no-tools", () =>
+              follow(
+                "copper",
+                callStream(
+                  { module: 2, feature: "ask-copper" },
+                  { messages, providerOptions: THOUGHT_SUMMARIES },
+                ),
+              ),
+            );
+          } else {
+            let current = first;
+            for (let handoffs = 0; ; handoffs++) {
+              const agent = current;
+              const next = await traceAgent(
+                agent === "refund" ? "refund-agent" : "copper",
+                () => follow(agent, agentCall(agent, messages, desk)),
+              );
+              if (!next || next === current || handoffs >= MAX_HANDOFFS) break;
+              progress.steps.push({ type: "handoff", from: current, to: next });
+              progress.agent = current = next;
+              progress.reply = "";
+              call++;
+              update(snapshot());
+            }
+          }
+          progress.status = "done";
+          if (!progress.reply.trim()) progress.reply = SORRY;
+        } catch {
+          progress.status = "error";
+          if (!progress.reply.trim()) progress.reply = SORRY;
         }
-      }
-      progress.status = "done";
-      if (!progress.reply.trim()) progress.reply = SORRY;
-    } catch {
-      progress.status = "error";
-      if (!progress.reply.trim()) progress.reply = SORRY;
-    }
+        finish({
+          reply: progress.reply,
+          status: progress.status,
+          answeredBy: progress.agent,
+        });
+      },
+    );
+    // Send the trace before the function can be frozen (serverless).
+    await flushTraces();
     done(snapshot());
   })();
 

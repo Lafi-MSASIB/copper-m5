@@ -66,6 +66,21 @@ function languageModel(model: ModelId) {
   return google()(id);
 }
 
+/**
+ * Labels a call for Langfuse: its name is the feature ("ask-copper",
+ * "refund-agent", "search-docs") and the module is attached as metadata. Does
+ * nothing when tracing is off.
+ */
+function traced(info: Omit<CallInfo, "model">) {
+  return {
+    runtimeContext: { module: info.module, feature: info.feature },
+    telemetry: {
+      functionId: info.feature,
+      includeRuntimeContext: { module: true, feature: true },
+    },
+  };
+}
+
 /** Prints one line per model call, so the cost and time are visible. */
 async function logCall(row: AiCallRow): Promise<void> {
   console.info("[ai_calls]", JSON.stringify(row));
@@ -114,7 +129,7 @@ async function tracked<T extends { usage: Usage }>(
 /** Generates text. Example: callText({ module: 3, feature: "support-answer" }, { prompt }) */
 export async function callText(info: CallInfo, options: TextOptions) {
   return tracked(info, (model) =>
-    generateText({ ...options, model: languageModel(model) }),
+    generateText({ ...traced(info), ...options, model: languageModel(model) }),
   );
 }
 
@@ -126,6 +141,7 @@ export async function callObject<Schema extends z.ZodType>(
   const { schema, ...rest } = options;
   const result = await tracked(info, (model) =>
     generateText({
+      ...traced(info),
       ...rest,
       model: languageModel(model),
       output: Output.object({ schema }),
@@ -160,6 +176,7 @@ export async function callEmbedMany(
     });
   try {
     const result = await embedMany({
+      ...traced(info),
       model: google().embedding(EMBEDDING_MODEL.slice("google/".length)),
       values,
       providerOptions: {
@@ -188,6 +205,7 @@ export function callStream(info: CallInfo, options: StreamOptions) {
   const model = info.model ?? defaultModel();
   const row = rowFor(info, model, performance.now());
   return streamText({
+    ...traced(info),
     ...options,
     model: languageModel(model),
     onFinish: ({ totalUsage }) => logCall(row(true, totalUsage)),
