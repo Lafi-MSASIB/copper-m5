@@ -1,0 +1,74 @@
+name: Quality gate
+
+# Runs on every pull request. Two checks have to pass before a change can go
+# into main (branch protection, switched on in the repo's settings, enforces it):
+#   tests       the app's own tests. They use a fake model, so they need no keys.
+#   golden-set  asks Ask Copper the golden-set questions and has an AI judge
+#               score the answers (the keys come from the repo's Actions secrets).
+# CI (ci.yml) keeps checking the build on all three operating systems.
+on:
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same pull request replaces the run that is still going.
+concurrency:
+  group: quality-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  golden-set:
+    name: golden-set
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+      AI_MODEL: ${{ vars.AI_MODEL }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+
+      # Fail with a clear message, not a mystery, when a key is missing.
+      # (Only the names are checked; values are never printed.)
+      - name: Check the keys are set
+        run: |
+          for name in GOOGLE_GENERATIVE_AI_API_KEY LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_BASE_URL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not set. Add it under Settings > Secrets and variables > Actions."
+              exit 1
+            fi
+          done
+
+      - name: Check the evaluation exists
+        run: |
+          if ! npm run | grep -qE '^  eval$'; then
+            echo "::error::There is no 'eval' script in package.json yet. The golden-set evaluation has to exist before this check can pass."
+            exit 1
+          fi
+
+      - name: Run the golden-set evaluation
+        run: npm run eval
