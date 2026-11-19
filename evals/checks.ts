@@ -3,8 +3,12 @@
 // were used, whether a page was cited, who answered, and what the app itself
 // decided about a refund (the model never decides that).
 import type { Expected } from "@/evals/golden-set";
+import type { Usage } from "@/lib/ai/usage";
 
 export type ToolCall = { name: string; input: unknown; output: unknown };
+
+/** The two ways to build the support assistant that are compared. */
+export type SystemName = "two-agent" | "single-agent";
 
 /** What one run of Ask Copper produced for one question. */
 export type RunOutput = {
@@ -12,6 +16,8 @@ export type RunOutput = {
   /** The agent that finished the answer, when there was more than one. */
   answeredBy?: "copper" | "refund";
   tools: ToolCall[];
+  /** What the answer cost in model calls, tokens and time. */
+  usage?: Usage;
 };
 
 export type Check = { name: string; passed: boolean; comment: string };
@@ -25,19 +31,33 @@ export function refundResultOf(out: RunOutput): string | undefined {
   return typeof output?.status === "string" ? output.status : undefined;
 }
 
-/** Runs only the checks the question asks for, so every check that appears matters. */
-export function runChecks(expected: Expected, out: RunOutput): Check[] {
+/**
+ * Runs only the checks the question asks for, so every check that appears matters.
+ * Only the two-agent system hands the chat over, so for the single agent the
+ * hand-off and "who answered" expectations are left out; everything else (the
+ * tools that do the work, the cited page, what the app decided about a refund)
+ * is checked the same for both.
+ */
+export function runChecks(
+  expected: Expected,
+  out: RunOutput,
+  system: SystemName = "two-agent",
+): Check[] {
   const checks: Check[] = [];
   const used = new Set(out.tools.map((t) => t.name));
+  const handsOver = system === "two-agent";
+  const neededTools = (expected.tools ?? []).filter(
+    (t) => handsOver || !t.startsWith("transfer_to_"),
+  );
 
-  if (expected.tools?.length) {
-    const missing = expected.tools.filter((t) => !used.has(t));
+  if (neededTools.length) {
+    const missing = neededTools.filter((t) => !used.has(t));
     checks.push({
       name: "tools_used",
       passed: missing.length === 0,
       comment: missing.length
         ? `Did not use: ${missing.join(", ")}. Used: ${[...used].join(", ") || "no tools"}.`
-        : `Used ${expected.tools.join(", ")}.`,
+        : `Used ${neededTools.join(", ")}.`,
     });
   }
 
@@ -64,7 +84,7 @@ export function runChecks(expected: Expected, out: RunOutput): Check[] {
     });
   }
 
-  if (expected.answeredBy) {
+  if (handsOver && expected.answeredBy) {
     checks.push({
       name: "answered_by",
       passed: (out.answeredBy ?? "copper") === expected.answeredBy,

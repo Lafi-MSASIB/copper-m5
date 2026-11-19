@@ -178,7 +178,9 @@ agents on the same golden set. Langfuse is the only eval and monitoring tool.
 one trace with the agents that handled it, their tool calls, tokens, cost and
 time. A golden set of questions, checked by code and by an AI judge, with the
 scores kept in Langfuse, is run by a GitHub Actions workflow on every pull
-request together with the tests. (Comparing one agent with two comes next.)
+request together with the tests. The same questions are also run on one agent
+that does everything and compared with the two agents (Copper and the Refund
+agent), in Langfuse and in the terminal.
 
 | Piece | Where | What it does |
 |---|---|---|
@@ -192,8 +194,10 @@ request together with the tests. (Comparing one agent with two comes next.)
 | AI judge | `evals/judge.ts` | One Gemini call per answer (`{ module: 5, feature: "eval-judge" }`) scoring accuracy, groundedness and safety against the expected facts, with a one-line reason |
 | Scores | `evals/evaluators.ts` | Turns checks and judge results into Langfuse scores per question (`checks_pass`, `judge_accuracy`, `judge_grounded`, `judge_safe`, `judge_pass`) and per run (`run_pass_rate`, `run_checks_pass_rate`, `run_avg_accuracy`, `run_avg_grounded`) |
 | Pass/fail rule | `evals/gate.ts` | The run passes if at least 75% of answers get a judge pass and 90% pass every code check, and no safety or refund question fails at all |
-| System under test | `evals/systems.ts` | `two-agent`: the real `askCopper`. A single do-everything agent is added here next, to run on the same questions |
-| Runner | `scripts/eval.mts` (`npm run eval`) | Saves the golden set as the Langfuse dataset `copper-golden-set`, runs the chosen questions one at a time, attaches scores, prints a table. Exit 0 = passed, 1 = answers not good enough, 2 = couldn't finish (a key is missing, or Google's daily limit is used up). `--set core|full`, `--only id,id`, `--dry` |
+| Systems under test | `evals/systems.ts`, `evals/single-agent.ts` | `two-agent`: the real `askCopper` (Copper plus the Refund agent, with a hand-off). `single-agent`: ONE agent with Copper's instructions plus the same refund rules (`REFUND_RULES`, one shared copy) in one prompt, and every tool the two agents have between them minus the hand-off. Each run is measured the same way |
+| Measuring | `lib/ai/usage.ts` | `withUsage()` collects every AI call an answer made (reported by `lib/ai/call.ts`) and adds up agent turns, tool calls, tokens, cost and time |
+| Comparison | `evals/compare.ts` | Puts the two runs side by side: judge pass rate, code checks, accuracy, grounding, safety failures, cost, time, turns. It marks the better system on each row and lists the questions the two answered differently |
+| Runner | `scripts/eval.mts` (`npm run eval`, `npm run eval:compare`) | Saves the golden set as the Langfuse dataset `copper-golden-set`, runs the chosen questions one at a time on one system (`--system two-agent\|single-agent`) or on both (`eval:compare`), attaches scores, prints a table and, for both, the comparison. Exit 0 = passed, 1 = answers not good enough, 2 = couldn't finish (a key is missing, or Google's daily limit is used up). `--set core\|full`, `--only id,id`, `--dry`. The gate is about the two-agent system, the one that ships; the single agent is only compared |
 | Secrets | `.env.local` and the repo's Actions secrets | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`, `GOOGLE_GENERATIVE_AI_API_KEY`; `AI_MODEL` is an Actions variable |
 
 **What one trace looks like:** `ask-copper` (the turn, with the customer's
@@ -201,6 +205,16 @@ message as input and the reply as output) → `copper` (agent) → the model cal
 (each with its tokens and cost, which Langfuse works out from the model name)
 and the tool calls (`get_products`, `search_docs`, ...). When Copper hands a
 refund over, `refund-agent` appears as a second agent inside the same trace.
+
+**One agent vs. two agents:** `npm run eval:compare` runs the same questions on
+both and shows them as two runs of the dataset in Langfuse (open the dataset,
+go to Runs, tick both, choose Compare), with the same scores plus cost, time and
+turns. To keep it fair, both get the same model, the same refund rules and the
+same tools (the single agent just has no hand-off, and a few more steps to work
+with), and the checks that depend on a hand-off are skipped for the single
+agent. What to look at: the questions the two answered differently, safety and
+refund failures, and what each costs. A hand-off should cost one extra agent
+turn on a refund; the question is whether it buys better, safer answers.
 
 **Data flow:** question → `askCopper` → `traceTurn` → `traceAgent` → model and
 tool calls (traced automatically through the AI SDK integration) → reply →
@@ -227,6 +241,14 @@ tool calls (traced automatically through the AI SDK integration) → reply →
   `gemini-3-flash`, so the quick set fits once a day and the full set needs a
   key with billing. When the limit is hit the run exits with code 2
   (incomplete) and says so; it is never scored as a bad answer.
+- **The comparison is small.** The quick set is 4 questions, so a difference
+  between the two systems can be luck. Run `--set full` (10 questions), run it
+  more than once, and treat the result as a hint, not proof. It also costs twice
+  as many Google requests as one system.
+- **The comparison tests the setup, not the wording.** The refund rules are one
+  shared piece of text, so a difference comes from having two agents or one, not
+  from different instructions. A prompt written specially for one system could
+  change the result.
 - **`npm test` can spend free requests.** The course's
   `tests/ai.integration.test.ts` makes one real Google call whenever a key is in
   `.env.local`. Run `GOOGLE_GENERATIVE_AI_API_KEY= npm test` to skip it. CI has

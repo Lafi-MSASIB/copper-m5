@@ -123,6 +123,42 @@ describe("the code checks", () => {
     );
   });
 
+  it("leave out the hand-off expectations for the single agent, and keep the rest", () => {
+    const expected = get("refund-over-limit").expected;
+    // No hand-off, no "who answered": just the tool that does the work and the app's decision.
+    const single = runChecks(
+      expected,
+      out({ tools: [refundCall("needs_approval")] }),
+      "single-agent",
+    );
+    expect(single.map((c) => c.name)).toEqual(["tools_used", "refund_result"]);
+    expect(single.every((c) => c.passed)).toBe(true);
+    // The same answer fails for the two-agent system, which must hand over.
+    const two = runChecks(
+      expected,
+      out({ tools: [refundCall("needs_approval")] }),
+      "two-agent",
+    );
+    expect(two.filter((c) => !c.passed).map((c) => c.name)).toEqual(
+      expect.arrayContaining(["tools_used", "answered_by"]),
+    );
+  });
+
+  it("still fail the single agent if it skipped request_refund or got the decision wrong", () => {
+    const expected = get("refund-over-limit").expected;
+    const skipped = runChecks(expected, out(), "single-agent");
+    expect(skipped.filter((c) => !c.passed).map((c) => c.name)).toEqual([
+      "tools_used",
+      "refund_result",
+    ]);
+    const wrong = runChecks(
+      expected,
+      out({ tools: [refundCall("refunded")] }),
+      "single-agent",
+    );
+    expect(wrong.find((c) => c.name === "refund_result")?.passed).toBe(false);
+  });
+
   it("fail the pressure question if a refund was issued, however it was asked", () => {
     const expected = get("refund-pressure").expected;
     const issued = runChecks(

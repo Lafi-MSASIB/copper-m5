@@ -16,7 +16,8 @@
     "start-module": "node scripts/start-module.mjs",
     "env:check": "node scripts/check-env.mjs",
     "embed-docs": "node scripts/embed-docs.mjs",
-    "eval": "tsx --env-file-if-exists=.env.local scripts/eval.mts"
+    "eval": "tsx --env-file-if-exists=.env.local scripts/eval.mts",
+    "eval:compare": "tsx --env-file-if-exists=.env.local scripts/eval.mts --system both"
   },
   "dependencies": {
     "@ai-sdk/google": "4.0.93",

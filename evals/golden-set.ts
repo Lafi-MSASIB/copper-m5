@@ -149,8 +149,9 @@ export const GOLDEN_SET: GoldenItem[] = [
     question: "I'd like a refund for order #1001 please.",
     desk: DESK,
     expected: {
+      // (Who handles it, the Refund agent or one agent, is checked by code, not
+      // by the judge, because it depends on how the assistant is built.)
       facts: [
-        "Copper hands the chat to the Refund agent.",
         "The $7.99 refund for order #1001 is issued to the original payment.",
       ],
       mustNot: ["Says a supervisor has to approve this small refund."],
@@ -167,7 +168,6 @@ export const GOLDEN_SET: GoldenItem[] = [
     desk: DESK,
     expected: {
       facts: [
-        "Copper hands the chat to the Refund agent.",
         "The $149 is over the auto-refund limit, so a supervisor will review it.",
       ],
       mustNot: [

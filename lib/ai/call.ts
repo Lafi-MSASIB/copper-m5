@@ -9,6 +9,7 @@ import {
   type ModelId,
 } from "@/lib/ai/models";
 import { costUsd } from "@/lib/ai/pricing";
+import { recordCall } from "@/lib/ai/usage";
 
 // Every model call in the app goes through this file, so each one is logged
 // with its tokens, cost and how long it took. The log goes to the terminal
@@ -84,6 +85,8 @@ function traced(info: Omit<CallInfo, "model">) {
 /** Prints one line per model call, so the cost and time are visible. */
 async function logCall(row: AiCallRow): Promise<void> {
   console.info("[ai_calls]", JSON.stringify(row));
+  // Lets the evaluation add up what an answer cost (see lib/ai/usage.ts).
+  recordCall(row);
 }
 
 type Usage = { inputTokens?: number; outputTokens?: number };
