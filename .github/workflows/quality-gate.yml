@@ -44,6 +44,10 @@ jobs:
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
       LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
       AI_MODEL: ${{ vars.AI_MODEL }}
+      # Traces from this job are labeled "ci" in Langfuse, apart from real chats.
+      LANGFUSE_TRACING_ENVIRONMENT: ci
+      # The quick set by default; set a repo variable EVAL_SET to "full" to run every question.
+      EVAL_SET: ${{ vars.EVAL_SET || 'core' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

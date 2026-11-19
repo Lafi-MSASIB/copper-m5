@@ -176,9 +176,9 @@ agents on the same golden set. Langfuse is the only eval and monitoring tool.
 
 **Summary:** Every AI call is traced in Langfuse, so one question shows up as
 one trace with the agents that handled it, their tool calls, tokens, cost and
-time. A GitHub Actions workflow runs the tests and the golden-set evaluation on
-every pull request. (The golden set and the AI judge come next; this section
-covers the workflow and the tracing.)
+time. A golden set of questions, checked by code and by an AI judge, with the
+scores kept in Langfuse, is run by a GitHub Actions workflow on every pull
+request together with the tests. (Comparing one agent with two comes next.)
 
 | Piece | Where | What it does |
 |---|---|---|
@@ -187,6 +187,13 @@ covers the workflow and the tracing.)
 | Call labels | `lib/ai/call.ts` | Every `callText`, `callObject`, `callStream` and `callEmbedMany` is named by its `feature` (for example `refund-agent`) and carries its `module` as metadata |
 | Chat | `lib/copper/assistant/ask.ts` | Wraps each question in `traceTurn` (name `ask-copper`, tag `tools` or `no-tools`) and each agent's turn in `traceAgent` (`copper`, `refund-agent`, `copper-no-tools`) |
 | Workflow | `.github/workflows/quality-gate.yml` | Two checks on every pull request: `tests` (lint, typecheck, `npm test`) and `golden-set` (`npm run eval`, using the repo's Actions secrets). Branch protection will require both |
+| Golden set | `evals/golden-set.ts` | 10 questions (pricing, stock, support documents, refunds, scope, safety). Each says what a good answer contains and what it must never do. `core: true` marks the 4 that pull requests run by default. Tests check every expectation against the real catalog, stock, PDFs and refund rule |
+| Code checks | `evals/checks.ts` | Exact, free checks: which tools were used, which page was cited, who answered, what `request_refund` reported, and that nothing from the instructions leaked |
+| AI judge | `evals/judge.ts` | One Gemini call per answer (`{ module: 5, feature: "eval-judge" }`) scoring accuracy, groundedness and safety against the expected facts, with a one-line reason |
+| Scores | `evals/evaluators.ts` | Turns checks and judge results into Langfuse scores per question (`checks_pass`, `judge_accuracy`, `judge_grounded`, `judge_safe`, `judge_pass`) and per run (`run_pass_rate`, `run_checks_pass_rate`, `run_avg_accuracy`, `run_avg_grounded`) |
+| Pass/fail rule | `evals/gate.ts` | The run passes if at least 75% of answers get a judge pass and 90% pass every code check, and no safety or refund question fails at all |
+| System under test | `evals/systems.ts` | `two-agent`: the real `askCopper`. A single do-everything agent is added here next, to run on the same questions |
+| Runner | `scripts/eval.mts` (`npm run eval`) | Saves the golden set as the Langfuse dataset `copper-golden-set`, runs the chosen questions one at a time, attaches scores, prints a table. Exit 0 = passed, 1 = answers not good enough, 2 = couldn't finish (a key is missing, or Google's daily limit is used up). `--set core|full`, `--only id,id`, `--dry` |
 | Secrets | `.env.local` and the repo's Actions secrets | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`, `GOOGLE_GENERATIVE_AI_API_KEY`; `AI_MODEL` is an Actions variable |
 
 **What one trace looks like:** `ask-copper` (the turn, with the customer's
@@ -215,8 +222,17 @@ tool calls (traced automatically through the AI SDK integration) → reply →
 - **Customer text is recorded.** The question and the reply are stored in
   Langfuse. That's fine for the fictional demo; a real deployment would mask
   personal details first.
-- **Google's free limit.** The golden-set evaluation makes many model requests,
-  and a free key allows about 20 a day for `gemini-3-flash`. The key and the
-  size of the golden set are still to be decided.
-- **The `golden-set` check fails until the evaluation exists.** That is
-  deliberate, so a missing evaluation can't pass silently.
+- **Google's free limit.** The quick set (4 questions) takes about 15 model
+  requests; the full set about 40. A free key allows about 20 a day for
+  `gemini-3-flash`, so the quick set fits once a day and the full set needs a
+  key with billing. When the limit is hit the run exits with code 2
+  (incomplete) and says so; it is never scored as a bad answer.
+- **`npm test` can spend free requests.** The course's
+  `tests/ai.integration.test.ts` makes one real Google call whenever a key is in
+  `.env.local`. Run `GOOGLE_GENERATIVE_AI_API_KEY= npm test` to skip it. CI has
+  no key, so it skips there.
+- **The judge is a model too.** It can be wrong or lenient, and it is the same
+  model family as the agent. The code checks are the part that never varies, and
+  the safety and refund questions must all pass.
+- **The golden set can go out of date.** If a price, a stock level or a PDF
+  changes, `tests/eval-golden-set.test.ts` fails and says which question to update.
