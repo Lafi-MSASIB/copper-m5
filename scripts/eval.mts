@@ -14,6 +14,7 @@
 //
 // The pass/fail gate is about the system that ships (the two-agent Ask Copper).
 // The single agent is there to be compared against it, not to be gated.
+import { appendFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { LangfuseClient } from "@langfuse/client";
 import type { SystemName } from "@/evals/checks";
@@ -124,6 +125,22 @@ if (data.length !== selected.length)
 // Both systems' runs share a timestamp, so the pair is easy to spot in Langfuse.
 const stamp = new Date().toISOString().slice(0, 16);
 
+// In GitHub Actions, whatever is appended to this file is shown on the pull
+// request's check page, so the scores can be read without opening the log.
+const md: string[] = [];
+function writeSummary(verdict: string) {
+  const file = process.env.GITHUB_STEP_SUMMARY;
+  if (!file) return;
+  try {
+    appendFileSync(
+      file,
+      `## Golden-set evaluation: ${verdict}\n\n${md.join("\n")}\n`,
+    );
+  } catch {
+    // The summary is only a convenience; never fail the run over it.
+  }
+}
+
 /** Runs every selected question on one system and scores the answers. */
 async function runSystem(system: SystemName): Promise<SystemResult> {
   console.log(`\n=== ${system} ===`);
@@ -193,6 +210,23 @@ async function runSystem(system: SystemName): Promise<SystemResult> {
   );
   if (result.experimentUrl)
     console.log(`See this run in Langfuse: ${result.experimentUrl}`);
+  const cell = (s: ScoredItem, name: string) =>
+    s.scores[name] === undefined ? "-" : String(s.scores[name]);
+  md.push(
+    `### ${system} (${only ? "chosen questions" : `${setName} set`})`,
+    "",
+    `Scored ${summary.scoredCount} of ${summary.total}. Judge pass rate **${pct(summary.judgePassRate)}**, code checks **${pct(summary.checksPassRate)}**.`,
+    "",
+    "| question | checks | accuracy | grounded | safe | judge | cost ($) | time (s) |",
+    "|---|---|---|---|---|---|---|---|",
+    ...items.map(
+      (s) =>
+        `| ${s.id} | ${cell(s, "checks_pass")} | ${cell(s, "judge_accuracy")} | ${cell(s, "judge_grounded")} | ${cell(s, "judge_safe")} | ${cell(s, "judge_pass")} | ${cell(s, "cost_usd")} | ${cell(s, "latency_s")} |`,
+    ),
+    "",
+    result.experimentUrl ? `[Open this run in Langfuse](${result.experimentUrl})` : "",
+    "",
+  );
   await langfuse.flush();
   return { system, runName, url: result.experimentUrl, items, summary };
 }
@@ -224,6 +258,7 @@ if (incomplete.length) {
   console.error(
     "If the log above mentions a quota, Google's free daily limit is used up. It resets once a day: run again later, ask for fewer questions with --only, or use a Google key with billing turned on.",
   );
+  writeSummary("could not finish");
   process.exit(2);
 }
 if (results.length > 1)
@@ -233,8 +268,10 @@ if (results.length > 1)
     );
 if (gated.summary.ok) {
   console.log(`\nThe golden-set evaluation PASSED (${gated.system}).`);
+  writeSummary("PASSED");
   process.exit(0);
 }
+writeSummary("FAILED");
 console.error(
   `\nThe golden-set evaluation FAILED (${gated.system}):\n- ${gated.summary.reasons.join("\n- ")}`,
 );
